@@ -1,0 +1,77 @@
+name: KOMPAS smoke test
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      show_task_window:
+        description: 'Open CAD Assist WPF task window on the runner desktop'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+
+jobs:
+  kompas-smoke:
+    name: Build and run on KOMPAS workstation
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 20
+    env:
+      KOMPAS_TEST_MODEL_PATH: 'C:\cad-assist-test\test.m3d'
+      CAD_ASSIST_TEST_TASK: 'Проверить отверстия под крепёж'
+      DOTNET_SYSTEM_CONSOLE_ALLOW_ANSI_COLOR_REDIRECTION: 'true'
+      CAD_ASSIST_APP_DIR: 'C:\cad-assist-test\app'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Build and publish CAD Assist app
+        shell: powershell
+        run: |
+          chcp 65001 | Out-Null
+          [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+          $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+          dotnet restore src/CadAssist.Kompas.Interop/CadAssist.Kompas.Interop.csproj
+          dotnet build src/CadAssist.Kompas.Interop/CadAssist.Kompas.Interop.csproj -c Release --no-restore
+          New-Item -ItemType Directory -Force -Path "$env:CAD_ASSIST_APP_DIR" | Out-Null
+          dotnet publish src/CadAssist.Kompas.Interop/CadAssist.Kompas.Interop.csproj -c Release -o "$env:CAD_ASSIST_APP_DIR" --no-restore
+
+      - name: Run CAD Assist smoke test
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Continue'
+          chcp 65001 | Out-Null
+          [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+          $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+          New-Item -ItemType Directory -Force -Path artifacts | Out-Null
+          $showTaskWindow = '${{ github.event.inputs.show_task_window }}'
+          $taskWindowArg = ''
+          if ($showTaskWindow -eq 'true') { $taskWindowArg = '--show-task-window' }
+          $appExe = Join-Path $env:CAD_ASSIST_APP_DIR 'CadAssist.Kompas.Interop.exe'
+          if (-not (Test-Path $appExe)) {
+            Write-Host "CAD Assist executable was not found: $appExe"
+            exit 1
+          }
+          & $appExe --smoke-test --model-path "$env:KOMPAS_TEST_MODEL_PATH" --add-task "$env:CAD_ASSIST_TEST_TASK" $taskWindowArg --json-log artifacts/kompas-smoke.json *> artifacts/kompas-smoke.log
+          $exitCode = $LASTEXITCODE
+          Get-Content -Encoding UTF8 artifacts/kompas-smoke.log
+          if ($exitCode -ne 0) {
+            Write-Host "CAD Assist smoke test failed with exit code $exitCode"
+            exit $exitCode
+          }
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kompas-smoke-diagnostics
+          path: artifacts/
